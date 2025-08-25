@@ -273,20 +273,28 @@ class VoiceAssistant:
         )
 
     def _save_to_memory_if_important(self, user_input: str, ai_response: str) -> None:
-        """Persist durable details using generic extractor (notes + primer)."""
+        """
+        Persist durable details using generic extractor (notes + primer).
+        IMPORTANT: Only consider the USER text as a source of truth.
+        """
         try:
             if self.memory.durable_trigger(user_input, ai_response):
+                # Extract from USER text only; reply is NOT a source of facts.
                 bullets = self.memory.extract_notes(user_input, "", self.history[-6:])
                 if bullets:
+                    # bullets are tuples (text, confidence)
                     self.memory.add_bullets(bullets)
-                    self.memory.append_notes_md(bullets)
+                    # notes.md expects strings
+                    self.memory.append_notes_md([t for t, _ in bullets])
                     self.memory.maybe_rebuild_primer()
                     logger.info(f"Saved {len(bullets)} notes to memory")
 
-                    # Refresh primer in-system prompt for next turns
+                    # Refresh primer in system prompt for next turns
                     primer = self.memory.load_or_build_primer()
                     if primer:
-                        self.sys_prompt = f"{make_system_prompt(self.current_lang)}\n\n## Previous Context:\n{primer}"
+                        self.sys_prompt = (
+                            f"{make_system_prompt(self.current_lang)}\n\n## Previous Context:\n{primer}"
+                        )
         except Exception as e:
             logger.warning(f"Memory save failed: {e}")
 
