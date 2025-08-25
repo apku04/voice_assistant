@@ -182,6 +182,15 @@ class VoiceAssistant:
     def _llm_answer_from_memory(self, query: str | None) -> str:
         """Compose an answer from persisted notes using the LLM deterministically."""
         # 1) fetch relevant notes (or latest if no query)
+        if query:
+            m = re.match(r"^\s*my\s+([a-z0-9 _\-]{1,40})\s*$", query, flags=re.I)
+            if m:
+                key = m.group(1).strip().lower()
+                key = {"fullname": "name", "user": "name", "handle": "name"}.get(key, key)
+                val = self.memory.lookup_kv(key)
+                if val:
+                    return val
+
         items = self.memory.recall(query or None, top_k=6)
         if not items:
             return ("I haven’t saved anything yet." if not query
@@ -244,8 +253,13 @@ class VoiceAssistant:
                     else f"I don’t have anything saved about {query}.")
         # If user asked “what is my X …” try to return a single best line
         if query and query.lower().startswith("my "):
-            best = items[0]["text"]
-            return best.replace("Note:", "").strip()
+            m = re.match(r"^\s*my\s+([a-z0-9 _\-]{1,40})\s*$", query, flags=re.I)
+            if m:
+                key = m.group(1).strip().lower()
+                key = {"fullname": "name", "user": "name", "handle": "name"}.get(key, key)
+                val = self.memory.lookup_kv(key)
+                if val:
+                    return val
         # Otherwise show top matches as bullets
         lines = [f"- {i['text'].replace('Note:', '').strip()}" for i in items]
         return ("Saved notes:" if not query else f"Notes about {query}:") + "\n" + "\n".join(lines)

@@ -224,6 +224,21 @@ class ConversationMemory:
         top = [t for s, t in scored[:RELEVANT_TOP_K] if s > 0.0]
         return "Relevant notes:\n" + "\n".join(f"- {t}" for t in top) if top else ""
 
+
+    def lookup_kv(self, key: str) -> str | None:
+        """Return the most recent 'key: value' stored in notes (newest first)."""
+        key = key.strip().lower()
+        for n in reversed(self.state.get("notes", [])):
+            t = (n.get("text") or "").strip()
+            m = re.match(r"^([a-z0-9 _\-]{1,40})\s*:\s*(.+)$", t, flags=re.I)
+            if not m:
+                continue
+            k, v = m.group(1).strip().lower(), m.group(2).strip()
+            if k == key and v:
+                return v
+        return None
+
+
     def durable_trigger(self, user_text: str, reply_text: str) -> bool:
         if re.search(self._REMEMBER_PATS, user_text, re.I):
             return True
@@ -279,13 +294,16 @@ class ConversationMemory:
     def _heuristic_extract(self, user_text: str, reply_text: str) -> list[tuple[str, float]]:
         lines: List[tuple[str, float]] = []
 
-        # Extract personal information
-        if name_match := re.search(r"\bmy\s+name\s+is\s+([^.!,;?]+)", user_text, re.I):
-            lines.append((f"Name: {name_match.group(1).strip()}", 0.9))
-        if title_match := re.search(r"\bmy\s+title\s+is\s+([^.!,;?]+)", user_text, re.I):
-            lines.append((f"Title: {title_match.group(1).strip()}", 0.9))
-        if name_match := re.search(r"\bi\s+(?:am|'m)\s+([^.!,;?]+)", user_text, re.I):
-            lines.append((f"Name: {name_match.group(1).strip()}", 0.8))
+        name_m = re.search(r"\bmy\s+name\s+is\s+([^.!,;?]+)", user_text, re.I)
+        title_m = re.search(r"\bmy\s+title\s+is\s+([^.!,;?]+)", user_text, re.I)
+        if name_m:
+            lines.append((f"name: {name_m.group(1).strip()}", 0.9))
+        if title_m:
+            lines.append((f"title: {title_m.group(1).strip()}", 0.9))
+        if not name_m:
+            iam_m = re.search(r"\bi\s+(?:am|'m)\s+([^.!,;?]+)", user_text, re.I)
+            if iam_m:
+                lines.append((f"name: {iam_m.group(1).strip()}", 0.8))
 
         return lines[:EXTRACT_MAX_BULLETS]
 
@@ -350,7 +368,11 @@ class ConversationMemory:
         if notes:
             self.add_bullets(notes)
 
-        for key, val in re.findall(r"\bmy\s+([a-z0-9 _\-]{1,40})\s+is\s+([^\.,;\n]+)", chosen_text, flags=re.I):
+        for key, val in re.findall(
+                r"\bmy\s+([a-z0-9 _\-]{1,40})\s+is\s+([^.,;\n]+?)(?=\s+(?:and\b|but\b)|[.,;\n]|$)",
+                chosen_text,
+                flags=re.I,
+        ):
             kv = f"{key.strip().lower()}: {val.strip()}"
             self.add_bullets([(kv, max(0.75, picked[1] if picked else 0.8))])
 
