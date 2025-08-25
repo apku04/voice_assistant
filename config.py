@@ -10,7 +10,7 @@ class AppConfig:
         # Ollama endpoints
         self.pc_ollama_url = "http://192.168.1.6:11434/api/chat"
         self.pi_ollama_url = "http://localhost:11434/api/chat"
-        self.default_model = "qwen3:8b"
+        self.default_model = "llama3.2"
         
         # Piper / ALSA (playback)
         self.piper_model = os.getenv("PIPER_MODEL", "/home/pi/piper-tts/piper/voices/en_US-joe-medium.onnx")
