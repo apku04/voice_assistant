@@ -21,7 +21,7 @@ class AppConfig:
         self.piper_noisew = os.getenv("PIPER_NOISEW", "1.0")
         
         # Mic ALSA path
-        self.mic_alsa = os.getenv("MIC_DEV", "plughw:3,0")
+        self.mic_alsa = os.getenv("MIC_DEV", "plughw:1,0")
         self.mic_name_hint = os.getenv("MIC_NAME_HINT", "logitech")
         
         # STT defaults - match original 2-file behavior
@@ -44,6 +44,10 @@ class AppConfig:
         self.idle_color, self.think_color, self.speak_color, self.error_color = (
             (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (0.0, 1.0, 1.0), (1.0, 0.0, 0.0)
         )
+
+        # OLED / display
+        self.display_enabled = True
+        self.oled_addr = 0x3C
         
         # Diagnostics / Logs Config
         self.max_log_chars = 3000

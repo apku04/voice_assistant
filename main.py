@@ -11,6 +11,11 @@ import time
 import threading
 from typing import Dict, List, Optional
 
+from luma.core.interface.serial import i2c
+from luma.oled.device import sh1107
+from luma.core.render import canvas
+from PIL import ImageFont
+
 try:
     import sounddevice as sd
 except ImportError:
@@ -31,6 +36,7 @@ from .diagnostics import (
     maybe_offer_diag
 )
 from .memory_manager import ConversationMemory
+from .display_manager import DisplayManager
 
 # ---------- Logging ----------
 logging.basicConfig(
@@ -158,6 +164,9 @@ class VoiceAssistant:
 
         # Memory primer
         self._load_memory_primer()
+
+        self.display = DisplayManager()
+        self.display.splash("Optimus", "Voice system ready")
 
     # ---------- init ----------
     def init_stt(self):
@@ -350,7 +359,8 @@ class VoiceAssistant:
             logger.warning(f"Inline remember failed: {e}")
 
         msg = "Noted. I’ll remember that."
-        print(f"\nBOT ({self.current_model}): {msg}\n")
+        print(f"\nOptimus ({self.current_model}): {msg}\n")
+        self.display.splash(f"\nOptimus ({self.current_model}): {msg}\n")
         self.tts.speak(msg)
         return True
 
@@ -385,6 +395,7 @@ class VoiceAssistant:
 
         msg = "Noted. I’ll remember that."
         print(f"\nBOT ({self.current_model}): {msg}\n")
+        self.display.splash(f"\nOptimus: {msg}\n")
         self.tts.speak(msg)
         return True
 
@@ -408,6 +419,7 @@ class VoiceAssistant:
         if topic is not None or re.search(r"\b(what\s+did\s+you\s+(remember|save)|what\s+do\s+you\s+know)\b", lowq):
             msg = self._llm_answer_from_memory(topic)
             print(f"\nBOT ({self.current_model}): {msg}\n")
+            self.display.show_message(f"\nOptimus: {msg}\n")
             self.tts.speak(msg)
             return msg
 
@@ -435,6 +447,7 @@ class VoiceAssistant:
             self.history = result["history"][-config.max_history_length:]
 
             print(f"\nBOT ({self.current_model}): {reply}\n")
+            self.display.show_message(f"\nOptimus: {reply}\n")
             self.tts.speak(reply)
 
             # 4) SAVE DURABLE FACTS (user text only; do not learn from the bot's own words)
@@ -558,6 +571,7 @@ class VoiceAssistant:
                     current_lang=self.current_lang,
                 )
                 print(f"\nBOT ({self.current_model}): {reply}\n")
+                self.display.show_message(f"\nOptimus: {reply}\n")
                 self.tts.speak(reply)
 
                 sug = maybe_offer_diag(reply, allow=True)
@@ -600,6 +614,7 @@ class VoiceAssistant:
                 )
                 reply = result["reply"]
                 print(f"\nBOT ({self.current_model}): {reply}\n")
+                self.display.show_message(f"\nOptimus: {reply}\n")
                 self.tts.speak(reply)
             finally:
                 self.busy.stop()
@@ -627,6 +642,7 @@ class VoiceAssistant:
                 )
                 reply = result["reply"]
                 print(f"\nBOT ({self.current_model}): {reply}\n")
+                self.display.show_message(f"\nOptimus: {reply}\n")
                 self.tts.speak(reply)
             finally:
                 self.busy.stop()
