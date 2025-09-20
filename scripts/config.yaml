@@ -1,0 +1,25 @@
+{
+  "scripts": [
+    {
+      "key": "fan_on",
+      "phrases": ["turn on fan", "turn on the fan", "fan on", "start the fan"],
+      "script": "fan_controller.py",
+      "args": ["on"],
+      "timeout_sec": 6
+    },
+    {
+      "key": "fan_off",
+      "phrases": ["turn off fan", "turn off the fan", "fan off", "stop the fan"],
+      "script": "fan_controller.py",
+      "args": ["off"],
+      "timeout_sec": 6
+    },
+    {
+      "key": "get_temp",
+      "phrases": ["get temperature", "what is the temperature", "read temp"],
+      "script": "temperature_sensor.py",
+      "args": [],
+      "timeout_sec": 8
+    }
+  ]
+}
