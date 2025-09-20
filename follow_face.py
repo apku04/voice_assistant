@@ -17,61 +17,70 @@ Pins:
 import os
 import time
 import threading
+from typing import Optional
+
 import cv2
 import numpy as np
 from gpiozero import DigitalOutputDevice, Device
 from gpiozero.pins.lgpio import LGPIOFactory
 
 # ---------------- Camera config ----------------
-CAP_INDEX        = 0
+CAP_INDEX = 0
 FRAME_W, FRAME_H = 640, 480
-FPS              = 30
+FPS = 30
 
 # Model files (override via env if desired)
 YUNET_ONNX = os.getenv("YUNET_ONNX", "/usr/share/opencv4/face_detection_yunet_2023mar.onnx")
-DNN_PROTO  = os.getenv("DNN_PROTO",  "/usr/share/opencv4/deploy.prototxt")
-DNN_MODEL  = os.getenv("DNN_MODEL",  "/usr/share/opencv4/res10_300x300_ssd_iter_140000.caffemodel")
-HAAR_XML   = os.getenv("HAAR_XML",   "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml")
+DNN_PROTO = os.getenv("DNN_PROTO", "/usr/share/opencv4/deploy.prototxt")
+DNN_MODEL = os.getenv("DNN_MODEL", "/usr/share/opencv4/res10_300x300_ssd_iter_140000.caffemodel")
+HAAR_XML = os.getenv("HAAR_XML", "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml")
 
 # ---------------- Control tuning ----------------
-DEADBAND_PX   = 16      # no movement if |error| <= deadband
-K_P           = 4.0     # pixel error -> step rate (Hz)
-MIN_RATE_HZ   = 40      # minimal step rate when outside deadband
-MAX_RATE_HZ   = 3000    # clamp for safety/smoothness
-STEP_PULSE_US = 250     # STEP high/low microseconds (>= driver min pulse)
-SMOOTHING     = 0.15    # EWMA; higher = smoother/slower
+DEADBAND_PX = 16            # no movement if |error| <= deadband
+K_P = 3.0                   # pixel error -> step rate (Hz)
+MIN_RATE_HZ = 40            # minimal step rate when outside deadband
+MAX_RATE_HZ = 1200          # clamp for safety/smoothness
+STEP_PULSE_US = 250         # STEP high/low microseconds (>= driver min pulse)
+SMOOTHING = 0.35            # EWMA; higher = smoother/slower
+MIN_FACE_AREA_RATIO = 0.004 # ignore blobs smaller than 0.4% of frame
 
 # Direction polarity (flip if motion is reversed for your rig)
-AZ_DIR_POS_RIGHT = False  # True => dx>0 drives DIR=ON as "right"
-ALT_DIR_POS_DOWN = False  # True => dy>0 (face below) drives DIR=ON as "down"
+AZ_DIR_POS_RIGHT = False    # True => dx>0 drives DIR=ON as "right"
+ALT_DIR_POS_DOWN = False    # True => dy>0 (face below) drives DIR=ON as "down"
 
 # Auto-disable behaviour
-FACE_LOSS_TIMEOUT = 1.5   # seconds without face → disable drivers
-IDLE_TIMEOUT_SEC  = 2.0   # seconds with 0 rate (even if face centered) → disable
+FACE_LOSS_TIMEOUT = 1.5     # seconds without face → disable drivers
+IDLE_TIMEOUT_SEC = 2.0      # seconds with 0 rate (even if face centered) → disable
 
 # ---------------- HTTP MJPEG streamer (Flask) ----------------
 import io
 from flask import Flask, Response
-STREAM_HOST    = "0.0.0.0"     # visit http://<pi-ip>:5000/
-STREAM_PORT    = 5000
-STREAM_QUALITY = 70            # JPEG quality (lower = faster)
-STREAM_WIDTH   = 640           # resize width for stream; 0 = keep original
+
+STREAM_HOST = "0.0.0.0"  # visit http://<pi-ip>:5000/
+STREAM_PORT = 5000
+STREAM_QUALITY = 70       # JPEG quality (lower = faster)
+STREAM_WIDTH = 640        # resize width for stream; 0 = keep original
 
 app = Flask(__name__)
 _latest_jpeg = None
 _latest_lock = threading.Lock()
+
 
 def _set_stream_frame(bgr_frame):
     """Convert BGR frame to JPEG and store for streamer."""
     global _latest_jpeg
     if STREAM_WIDTH and bgr_frame.shape[1] != STREAM_WIDTH:
         scale = STREAM_WIDTH / float(bgr_frame.shape[1])
-        bgr_frame = cv2.resize(bgr_frame, (STREAM_WIDTH, int(bgr_frame.shape[0]*scale)),
-                               interpolation=cv2.INTER_AREA)
+        bgr_frame = cv2.resize(
+            bgr_frame,
+            (STREAM_WIDTH, int(bgr_frame.shape[0] * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
     ok, buf = cv2.imencode(".jpg", bgr_frame, [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_QUALITY])
     if ok:
         with _latest_lock:
             _latest_jpeg = buf.tobytes()
+
 
 def _mjpeg_generator():
     boundary = b"--frame"
@@ -84,6 +93,7 @@ def _mjpeg_generator():
         yield boundary + b"\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
         time.sleep(0.03)
 
+
 @app.route("/")
 def index():
     return (
@@ -94,9 +104,11 @@ def index():
         "</body></html>"
     )
 
+
 @app.route("/video")
 def video():
     return Response(_mjpeg_generator(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
 
 # ---------------- GPIO setup ----------------
 Device.pin_factory = LGPIOFactory()
@@ -104,25 +116,28 @@ Device.pin_factory = LGPIOFactory()
 A_DIR, A_STEP, A_EN = 4, 25, 24   # Azimuth
 B_DIR, B_STEP, B_EN = 12, 6, 5    # Altitude
 
-A_dir  = DigitalOutputDevice(A_DIR)
-A_en   = DigitalOutputDevice(A_EN, active_high=False, initial_value=True)  # EN low = enabled
+A_dir = DigitalOutputDevice(A_DIR)
+A_en = DigitalOutputDevice(A_EN, active_high=False, initial_value=True)  # EN low = enabled
 A_step = DigitalOutputDevice(A_STEP)
 
-B_dir  = DigitalOutputDevice(B_DIR)
-B_en   = DigitalOutputDevice(B_EN, active_high=False, initial_value=True)
+B_dir = DigitalOutputDevice(B_DIR)
+B_en = DigitalOutputDevice(B_EN, active_high=False, initial_value=True)
 B_step = DigitalOutputDevice(B_STEP)
+
 
 def enable_drivers(enable: bool):
     # active_high=False ⇒ on() pulls EN LOW (enable), off() pulls EN HIGH (disable)
     if enable:
-        A_en.on();  B_en.on()
+        A_en.on()
+        B_en.on()
     else:
-        A_en.off(); B_en.off()
+        A_en.off()
+        B_en.off()
+
 
 # ---------------- Stepper worker ----------------
 class StepperWorker(threading.Thread):
-    def __init__(self, name, dir_pin: DigitalOutputDevice, step_pin: DigitalOutputDevice,
-                 rate_hz_getter, direction_getter):
+    def __init__(self, name, dir_pin: DigitalOutputDevice, step_pin: DigitalOutputDevice, rate_hz_getter, direction_getter):
         super().__init__(name=name, daemon=True)
         self.dir_pin = dir_pin
         self.step_pin = step_pin
@@ -162,6 +177,7 @@ class StepperWorker(threading.Thread):
             # ensure pulse width isn't shorter than STEP_PULSE_US
             next_toggle = now + max(half_period, STEP_PULSE_US / 1_000_000.0)
 
+
 # ---------------- Shared state (vision → motor threads) ----------------
 class AxisControl:
     def __init__(self):
@@ -182,50 +198,81 @@ class AxisControl:
         with self._lock:
             return self._dir_positive
 
+
 az_ctrl = AxisControl()
 alt_ctrl = AxisControl()
+
 
 # ---------------- Detector abstraction ----------------
 class Detector:
     def __init__(self):
-        self.kind = None
+        self.kind: Optional[str] = None
+        self.detector = None
+        self._order = ["yunet", "dnn", "haar"]
+        if not self._init_detector():
+            raise RuntimeError(
+                "No face detector available. Provide YuNet ONNX, DNN prototxt+caffemodel, or Haar XML."
+            )
+
+    # ---------------- internal helpers ----------------
+    def _init_detector(self, skip: set[str] | None = None) -> bool:
+        skip = set(skip or set())
         self.detector = None
 
-        # Try YuNet (best) if model file present and API available
-        if (hasattr(cv2, "FaceDetectorYN_create") or hasattr(cv2, "FaceDetectorYN")) and os.path.isfile(YUNET_ONNX):
-            try:
-                if hasattr(cv2, "FaceDetectorYN_create"):
-                    self.detector = cv2.FaceDetectorYN_create(
-                        YUNET_ONNX, "", (FRAME_W, FRAME_H),
-                        score_threshold=0.5, nms_threshold=0.3, top_k=5000
-                    )
-                else:
-                    self.detector = cv2.FaceDetectorYN.create(
-                        YUNET_ONNX, "", (FRAME_W, FRAME_H), 0.5, 0.3, 5000
-                    )
-                self.kind = "yunet"
-            except Exception:
-                self.detector = None
+        for kind in self._order:
+            if kind in skip:
+                continue
 
-        # Try DNN (res10) if YuNet not available
-        if self.detector is None and os.path.isfile(DNN_PROTO) and os.path.isfile(DNN_MODEL):
-            try:
-                self.detector = cv2.dnn.readNetFromCaffe(DNN_PROTO, DNN_MODEL)
-                self.kind = "dnn"
-            except Exception:
-                self.detector = None
+            if kind == "yunet":
+                if not ((hasattr(cv2, "FaceDetectorYN_create") or hasattr(cv2, "FaceDetectorYN")) and os.path.isfile(YUNET_ONNX)):
+                    continue
+                try:
+                    if hasattr(cv2, "FaceDetectorYN_create"):
+                        self.detector = cv2.FaceDetectorYN_create(
+                            YUNET_ONNX, "", (FRAME_W, FRAME_H), score_threshold=0.5, nms_threshold=0.3, top_k=5000
+                        )
+                    else:
+                        self.detector = cv2.FaceDetectorYN.create(
+                            YUNET_ONNX, "", (FRAME_W, FRAME_H), 0.5, 0.3, 5000
+                        )
+                    self.kind = "yunet"
+                    print("[detector] Using: yunet")
+                    return True
+                except Exception as exc:
+                    print(f"[detector] YuNet init failed: {exc}")
+                    self.detector = None
+                    continue
 
-        # Fallback to Haar
-        if self.detector is None and os.path.isfile(HAAR_XML):
-            cascade = cv2.CascadeClassifier(HAAR_XML)
-            if not cascade.empty():
+            if kind == "dnn":
+                if not (os.path.isfile(DNN_PROTO) and os.path.isfile(DNN_MODEL)):
+                    continue
+                try:
+                    self.detector = cv2.dnn.readNetFromCaffe(DNN_PROTO, DNN_MODEL)
+                    self.kind = "dnn"
+                    print("[detector] Using: dnn")
+                    return True
+                except Exception as exc:
+                    print(f"[detector] DNN init failed: {exc}")
+                    self.detector = None
+                    continue
+
+            if kind == "haar":
+                if not os.path.isfile(HAAR_XML):
+                    continue
+                cascade = cv2.CascadeClassifier(HAAR_XML)
+                if cascade.empty():
+                    continue
                 self.detector = cascade
                 self.kind = "haar"
+                print("[detector] Using: haar")
+                return True
 
-        if self.detector is None:
-            raise RuntimeError("No face detector available. Provide YuNet ONNX, DNN prototxt+caffemodel, or Haar XML.")
+        self.kind = None
+        return False
 
-        print(f"[detector] Using: {self.kind}")
+    def _fallback(self, failed_kind: str) -> bool:
+        print(f"[detector] {failed_kind} failed; attempting fallback")
+        return self._init_detector(skip={failed_kind})
 
     def detect(self, frame_bgr):
         """Return list of (x, y, w, h) int boxes."""
@@ -233,10 +280,17 @@ class Detector:
 
         if self.kind == "yunet":
             try:
-                self.detector.setInputSize((w, h))
-            except Exception:
-                pass
-            _, faces = self.detector.detect(frame_bgr)
+                try:
+                    self.detector.setInputSize((w, h))
+                except Exception:
+                    pass
+                _, faces = self.detector.detect(frame_bgr)
+            except cv2.error as exc:
+                print(f"[detector] YuNet runtime error: {exc}")
+                if self._fallback("yunet"):
+                    return self.detect(frame_bgr)
+                return []
+
             boxes = []
             if faces is not None:
                 for f in faces:
@@ -244,11 +298,19 @@ class Detector:
                     boxes.append((int(x), int(y), int(bw), int(bh)))
             return boxes
 
-        elif self.kind == "dnn":
-            blob = cv2.dnn.blobFromImage(frame_bgr, 1.0, (300, 300),
-                                         (104.0, 177.0, 123.0), swapRB=False, crop=False)
-            self.detector.setInput(blob)
-            detections = self.detector.forward()
+        if self.kind == "dnn":
+            try:
+                blob = cv2.dnn.blobFromImage(
+                    frame_bgr, 1.0, (300, 300), (104.0, 177.0, 123.0), swapRB=False, crop=False
+                )
+                self.detector.setInput(blob)
+                detections = self.detector.forward()
+            except cv2.error as exc:
+                print(f"[detector] DNN runtime error: {exc}")
+                if self._fallback("dnn"):
+                    return self.detect(frame_bgr)
+                return []
+
             boxes = []
             for i in range(detections.shape[2]):
                 conf = float(detections[0, 0, i, 2])
@@ -261,13 +323,22 @@ class Detector:
                 boxes.append((x1, y1, max(0, x2 - x1), max(0, y2 - y1)))
             return boxes
 
-        else:  # haar
-            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-            faces = self.detector.detectMultiScale(
-                gray, scaleFactor=1.1, minNeighbors=6, minSize=(60, 60),
-                flags=cv2.CASCADE_SCALE_IMAGE,
-            )
+        if self.kind == "haar":
+            try:
+                gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+                faces = self.detector.detectMultiScale(
+                    gray, scaleFactor=1.1, minNeighbors=6, minSize=(60, 60), flags=cv2.CASCADE_SCALE_IMAGE
+                )
+            except cv2.error as exc:
+                print(f"[detector] Haar runtime error: {exc}")
+                return []
             return [(int(x), int(y), int(bw), int(bh)) for (x, y, bw, bh) in faces]
+
+        # If we reach here, detector is unavailable
+        if self._init_detector():
+            return self.detect(frame_bgr)
+        return []
+
 
 # ---------------- Helpers ----------------
 def error_to_rate_and_dir(dx, dy):
@@ -287,6 +358,7 @@ def error_to_rate_and_dir(dx, dy):
 
     return az_rate, az_dir, alt_rate, alt_dir
 
+
 def main():
     print("Drivers will auto-enable/disable")
     enable_drivers(False)  # start disabled
@@ -300,35 +372,34 @@ def main():
 
     # Open USB camera
     cap = cv2.VideoCapture(CAP_INDEX, cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  FRAME_W)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_H)
     cap.set(cv2.CAP_PROP_FPS, FPS)
     if not cap.isOpened():
-        a_worker.stop(); b_worker.stop()
-        a_worker.join(timeout=1.0); b_worker.join(timeout=1.0)
+        a_worker.stop()
+        b_worker.stop()
+        a_worker.join(timeout=1.0)
+        b_worker.join(timeout=1.0)
         enable_drivers(False)
         raise RuntimeError(f"Could not open /dev/video{CAP_INDEX}")
 
     # Init face detector (YuNet -> DNN -> Haar)
     detector = Detector()
-
     print("Face-follow running. Ctrl+C to stop.")
 
     # Start HTTP stream (daemon thread)
     threading.Thread(
         target=lambda: app.run(host=STREAM_HOST, port=STREAM_PORT, debug=False, use_reloader=False),
-        daemon=True
+        daemon=True,
     ).start()
-    print(f"Stream at http://{STREAM_HOST}:{STREAM_PORT}  (use the Pi's IP if 0.0.0.0)")
+    print(f"Stream at http://{STREAM_HOST}:{STREAM_PORT} (use the Pi's IP if 0.0.0.0)")
 
     # Throttled "No face" logging
     had_face_prev = False
     last_no_face_log = 0.0
     NO_FACE_LOG_INTERVAL = 2.0
-
-    last_face_time   = 0.0
+    last_face_time = 0.0
     last_motion_time = 0.0
-
     ewma_dx = 0.0
     ewma_dy = 0.0
 
@@ -341,9 +412,9 @@ def main():
 
             # Detect faces
             boxes = detector.detect(frame)
-
             h, w = frame.shape[:2]
             cx, cy = w // 2, h // 2
+            min_face_area = int(w * h * MIN_FACE_AREA_RATIO)
 
             # choose largest face
             best = None
@@ -353,6 +424,10 @@ def main():
                 if area > best_area:
                     best_area = area
                     best = (x, y, bw, bh)
+
+            if best is not None and best_area < min_face_area:
+                # Treat tiny blobs as noise
+                best = None
 
             if best is not None:
                 x, y, bw, bh = best
@@ -370,7 +445,7 @@ def main():
                 # Any motion requested?
                 if (az_rate > 0.0) or (alt_rate > 0.0):
                     last_motion_time = time.time()
-                    enable_drivers(True)    # ensure powered when moving
+                    enable_drivers(True)  # ensure powered when moving
 
                 last_face_time = time.time()
                 had_face_prev = True
@@ -380,9 +455,11 @@ def main():
                 cv2.circle(frame, (fx, fy), 4, (255, 0, 0), -1)
                 cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
 
-                print(f"Face dx={dx:+4d} dy={dy:+4d}  "
-                      f"AZ:{'+' if az_dir else '-'}{az_rate:5.1f} Hz  "
-                      f"ALT:{'+' if alt_dir else '-'}{alt_rate:5.1f} Hz")
+                print(
+                    f"Face dx={dx:+4d} dy={dy:+4d} "
+                    f"AZ:{'+' if az_dir else '-'}{az_rate:5.1f} Hz "
+                    f"ALT:{'+' if alt_dir else '-'}{alt_rate:5.1f} Hz"
+                )
 
                 # push to stream
                 _set_stream_frame(frame)
@@ -406,8 +483,11 @@ def main():
                 _set_stream_frame(frame)
 
             # If face is centered (both rates 0) for a while, also disable
-            if (az_ctrl.get_rate() == 0.0 and alt_ctrl.get_rate() == 0.0 and
-                (time.time() - last_motion_time) > IDLE_TIMEOUT_SEC):
+            if (
+                az_ctrl.get_rate() == 0.0
+                and alt_ctrl.get_rate() == 0.0
+                and (time.time() - last_motion_time) > IDLE_TIMEOUT_SEC
+            ):
                 enable_drivers(False)
 
             time.sleep(0.01)
@@ -418,11 +498,14 @@ def main():
         # stop motors
         az_ctrl.set(0.0, True)
         alt_ctrl.set(0.0, True)
-        a_worker.stop(); b_worker.stop()
-        a_worker.join(timeout=1.0); b_worker.join(timeout=1.0)
+        a_worker.stop()
+        b_worker.stop()
+        a_worker.join(timeout=1.0)
+        b_worker.join(timeout=1.0)
         enable_drivers(False)
         cap.release()
         print("Drivers disabled. Bye.")
+
 
 if __name__ == "__main__":
     main()
