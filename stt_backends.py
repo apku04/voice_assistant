@@ -70,7 +70,7 @@ class STTWhisper(STTBase):
             ]
             subprocess.run(cmd, check=True)
             
-            print(f"[stt] whisper model={config.whisper_model_name} lang={self.lang} (INT8)")
+            #print(f"[stt] whisper model={config.whisper_model_name} lang={self.lang} (INT8)")
             segments, info = self.model.transcribe(wav, language=self.lang)
             txt_parts = [s.text for s in segments if getattr(s, 'text', '').strip()]
             return " ".join(txt_parts).strip()
@@ -118,7 +118,7 @@ class STTVosk(STTBase):
             "-c", "1", "-t", "raw"
         ]
         
-        print(f"[stt] vosk via arecord… dev={mic_device} rate={rate} sil={sil} hold={holdms}ms max={maxms}ms")
+        #print(f"[stt] vosk via arecord… dev={mic_device} rate={rate} sil={sil} hold={holdms}ms max={maxms}ms")
         rec = KaldiRecognizer(self.model, rate)
 
         started = False

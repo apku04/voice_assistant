@@ -38,6 +38,7 @@ from .diagnostics import (
 from .memory_manager import ConversationMemory
 from .display_manager import DisplayManager
 from .face_follow_manager import FaceFollowManager
+from .perception import BehaviorMonitor
 from .script_manager import ScriptManager
 import atexit
 
@@ -175,6 +176,7 @@ class VoiceAssistant:
         self.face_follow = FaceFollowManager(display=self.display)
         if getattr(config, "face_follow_enabled", True):
             self.face_follow.start()
+        self.behavior = BehaviorMonitor(self.face_follow)
 
         # Script manager (yaml-configured small actions)
         self.scripts = ScriptManager()
@@ -447,8 +449,25 @@ class VoiceAssistant:
             self.tts.speak(msg)
             return msg
 
+        # 2.5) PERCEPTION QUERIES (face/hand status without LLM)
+        wants_mood, wants_hands = self.behavior.requirements(user_text)
+        snapshot = self.behavior.snapshot() if (wants_mood or wants_hands) else None
+        perception_reply = self.behavior.answer_query(user_text, snapshot)
+        if perception_reply:
+            self._announce_perception(perception_reply)
+            return perception_reply
+
         # 3) NORMAL CHAT (with optional diagnostics injection)
         user_for_llm = user_text
+        perception = ""
+        if wants_mood or wants_hands:
+            perception = self.behavior.build_context(
+                snapshot,
+                include_mood=wants_mood,
+                include_hands=wants_hands,
+            )
+        if perception:
+            user_for_llm += "\n\n[PERCEPTION]\n" + perception
         if ai_status_injection_needed(user_text):
             snap = collect_system_snapshot()
             user_for_llm += "\n\nSYSTEM_SNAPSHOT:\n```json\n" + json.dumps(
@@ -485,6 +504,13 @@ class VoiceAssistant:
             return msg
         finally:
             self.busy.stop()
+
+    def _announce_perception(self, text: str, *, speak: bool = True) -> None:
+        print(f"\nBOT ({self.current_model}): {text}\n")
+        if self.display:
+            self.display.show_message(f"\nOptimus: {text}\n")
+        if speak and self.tts:
+            self.tts.speak(text)
 
     # ---------- commands ----------
     def handle_command(self, user_input: str) -> bool:

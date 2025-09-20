@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Tuple
 
 from .display_manager import DisplayManager
 
@@ -30,6 +31,13 @@ class FaceFollowManager:
         self._proc: Optional[subprocess.Popen] = None
         self._reader_thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
+        self._state_lock = threading.Lock()
+        self._latest_behavior: Dict[str, Optional[Tuple[str, float]]] = {
+            "mood": None,
+            "left_hand": None,
+            "right_hand": None,
+            "last_event": None,
+        }
 
     def start(self) -> bool:
         if self._proc and self._proc.poll() is None:
@@ -64,6 +72,7 @@ class FaceFollowManager:
 
     def _read_stdout(self):
         last_update = 0.0
+        behavior_re = re.compile(r"^(Mood|Left hand|Right hand):\s+([\w\s]+)\s*\((\d+\.\d+)\)")
         try:
             if not self._proc or not self._proc.stdout:
                 return
@@ -73,7 +82,23 @@ class FaceFollowManager:
                 line = (line or "").strip()
                 if not line:
                     continue
-                # Throttle display updates
+
+                # Capture behavior lines regardless of throttling
+                match = behavior_re.match(line)
+                if match:
+                    label, state, conf = match.groups()
+                    key = {
+                        "Mood": "mood",
+                        "Left hand": "left_hand",
+                        "Right hand": "right_hand",
+                    }.get(label)
+                    if key:
+                        with self._state_lock:
+                            self._latest_behavior[key] = (state.strip(), float(conf))
+                            self._latest_behavior["last_event"] = (key, time.time())
+                    continue
+
+                # Throttle display updates for non-behavior messages
                 now = time.time()
                 if now - last_update < 0.25:
                     continue
@@ -88,6 +113,8 @@ class FaceFollowManager:
                 elif line.startswith("No face"):
                     if self.display:
                         self.display.status("face: none")
+                    with self._state_lock:
+                        self._latest_behavior["last_event"] = ("face", time.time())
                 elif line.lower().startswith("drivers will"):
                     if self.display:
                         self.display.status("face: init")
@@ -115,3 +142,7 @@ class FaceFollowManager:
 
     def is_running(self) -> bool:
         return bool(self._proc and self._proc.poll() is None)
+
+    def get_behavior_snapshot(self) -> Dict[str, Optional[Tuple[str, float]]]:
+        with self._state_lock:
+            return dict(self._latest_behavior)

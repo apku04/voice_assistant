@@ -14,6 +14,7 @@ Pins:
 - Motor B (Altitude / vertical):   DIR=12, STEP=6,  EN=5
 """
 
+import math
 import os
 import time
 import threading
@@ -43,6 +44,28 @@ MAX_RATE_HZ = 1200          # clamp for safety/smoothness
 STEP_PULSE_US = 250         # STEP high/low microseconds (>= driver min pulse)
 SMOOTHING = 0.35            # EWMA; higher = smoother/slower
 MIN_FACE_AREA_RATIO = 0.004 # ignore blobs smaller than 0.4% of frame
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_float(name: str, default: float) -> float:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+# Optional behavioural perception (mood + hands)
+ENABLE_BEHAVIOR = _env_bool("FF_BEHAVIOR", True)
+BEHAVIOR_INTERVAL = max(0.2, _env_float("FF_BEHAVIOR_INTERVAL", 0.6))
 
 # Direction polarity (flip if motion is reversed for your rig)
 AZ_DIR_POS_RIGHT = False    # True => dx>0 drives DIR=ON as "right"
@@ -197,6 +220,296 @@ class AxisControl:
     def get_dir(self) -> bool:
         with self._lock:
             return self._dir_positive
+
+
+class BehaviorAnalyzer:
+    """Optional MediaPipe-powered mood + hand cue inference."""
+
+    def __init__(self, interval_sec: float):
+        self.enabled = ENABLE_BEHAVIOR
+        self.interval_sec = max(0.2, float(interval_sec))
+        self._last_run = 0.0
+        self._holistic = None
+        self._mp = None
+        self._drawing = None
+        self._drawing_styles = None
+        self._state_lock = threading.Lock()
+        self._state: dict[str, Optional[tuple[str, float]]] = {
+            "mood": None,
+            "left": None,
+            "right": None,
+        }
+        self._last_face_landmarks = None
+        self._last_left_hand_landmarks = None
+        self._last_right_hand_landmarks = None
+
+        if not self.enabled:
+            print("[behavior] Disabled (FF_BEHAVIOR=0)")
+            return
+
+        try:
+            import mediapipe as mp  # type: ignore
+
+            self._mp = mp
+            self._holistic = mp.solutions.holistic.Holistic(
+                static_image_mode=False,
+                model_complexity=1,
+                smooth_landmarks=True,
+                enable_segmentation=False,
+                refine_face_landmarks=True,
+            )
+            self._drawing = mp.solutions.drawing_utils
+            self._drawing_styles = mp.solutions.drawing_styles
+            print("[behavior] MediaPipe holistic enabled")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[behavior] MediaPipe unavailable: {exc}")
+            self.enabled = False
+
+    def close(self) -> None:
+        if self._holistic is not None:
+            self._holistic.close()
+            self._holistic = None
+
+    def update(self, frame: np.ndarray, face_box: Optional[tuple[int, int, int, int]]) -> None:
+        if not self.enabled or self._holistic is None:
+            return
+
+        now = time.time()
+        if now - self._last_run < self.interval_sec:
+            return
+        self._last_run = now
+
+        _ = face_box  # reserved for future region-of-interest heuristics
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self._holistic.process(rgb)
+
+        self._last_face_landmarks = results.face_landmarks
+        self._last_left_hand_landmarks = results.left_hand_landmarks
+        self._last_right_hand_landmarks = results.right_hand_landmarks
+
+        summary = {
+            "mood": self._normalize_state(
+                self._classify_mood(results.face_landmarks, frame.shape) if results.face_landmarks else None
+            ),
+            "left": self._normalize_state(
+                self._classify_hand(results.left_hand_landmarks, frame.shape, "left")
+                if results.left_hand_landmarks
+                else None
+            ),
+            "right": self._normalize_state(
+                self._classify_hand(results.right_hand_landmarks, frame.shape, "right")
+                if results.right_hand_landmarks
+                else None
+            ),
+        }
+
+        with self._state_lock:
+            prev = self._state.copy()
+            self._state.update(summary)
+
+        if prev.get("mood") != summary["mood"]:
+            self._log_state_change("Mood", summary["mood"])
+        if prev.get("left") != summary["left"]:
+            self._log_state_change("Left hand", summary["left"])
+        if prev.get("right") != summary["right"]:
+            self._log_state_change("Right hand", summary["right"])
+
+    def annotate(self, frame: np.ndarray) -> None:
+        if not self.enabled or self._holistic is None or self._drawing is None:
+            return
+
+        if self._last_face_landmarks is not None and self._mp is not None and self._drawing_styles is not None:
+            try:
+                self._drawing.draw_landmarks(
+                    frame,
+                    self._last_face_landmarks,
+                    self._mp.solutions.face_mesh.FACEMESH_CONTOURS,
+                    landmark_drawing_spec=None,
+                    connection_drawing_spec=self._drawing_styles.get_default_face_mesh_contours_style(),
+                )
+            except Exception:
+                pass
+
+        if self._last_left_hand_landmarks is not None and self._mp is not None and self._drawing_styles is not None:
+            try:
+                self._drawing.draw_landmarks(
+                    frame,
+                    self._last_left_hand_landmarks,
+                    self._mp.solutions.hands.HAND_CONNECTIONS,
+                    self._drawing_styles.get_default_hand_landmarks_style(),
+                    self._drawing_styles.get_default_hand_connections_style(),
+                )
+            except Exception:
+                pass
+
+        if self._last_right_hand_landmarks is not None and self._mp is not None and self._drawing_styles is not None:
+            try:
+                self._drawing.draw_landmarks(
+                    frame,
+                    self._last_right_hand_landmarks,
+                    self._mp.solutions.hands.HAND_CONNECTIONS,
+                    self._drawing_styles.get_default_hand_landmarks_style(),
+                    self._drawing_styles.get_default_hand_connections_style(),
+                )
+            except Exception:
+                pass
+
+        overlay_y = 24
+        with self._state_lock:
+            mood = self._state.get("mood")
+            left = self._state.get("left")
+            right = self._state.get("right")
+
+        if mood is not None:
+            label, conf = mood
+            cv2.putText(
+                frame,
+                f"Mood: {label} ({conf:.2f})",
+                (10, overlay_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (220, 220, 40),
+                2,
+            )
+            overlay_y += 22
+
+        if left is not None:
+            label, conf = left
+            cv2.putText(
+                frame,
+                f"Left hand: {label} ({conf:.2f})",
+                (10, overlay_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (120, 200, 255),
+                2,
+            )
+            overlay_y += 20
+
+        if right is not None:
+            label, conf = right
+            cv2.putText(
+                frame,
+                f"Right hand: {label} ({conf:.2f})",
+                (10, overlay_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 180, 120),
+                2,
+            )
+
+    def _normalize_state(self, state: Optional[tuple[str, float]]) -> Optional[tuple[str, float]]:
+        if not state:
+            return None
+        label, conf = state
+        conf = max(0.0, min(1.0, float(conf)))
+        return label, round(conf, 2)
+
+    def _log_state_change(self, prefix: str, state: Optional[tuple[str, float]]) -> None:
+        if state is None:
+            print(f"{prefix}: unknown")
+            return
+        label, conf = state
+        print(f"{prefix}: {label} ({conf:.2f})")
+
+    def _classify_mood(
+        self,
+        face_landmarks,
+        frame_shape: tuple[int, int, int],
+    ) -> Optional[tuple[str, float]]:
+        try:
+            landmarks = face_landmarks.landmark
+            needed = [61, 291, 13, 14]
+            if any(idx >= len(landmarks) for idx in needed):
+                return None
+
+            mouth_left = self._landmark_to_xy(landmarks[61], frame_shape)
+            mouth_right = self._landmark_to_xy(landmarks[291], frame_shape)
+            mouth_top = self._landmark_to_xy(landmarks[13], frame_shape)
+            mouth_bottom = self._landmark_to_xy(landmarks[14], frame_shape)
+
+            mouth_width = self._distance(mouth_left, mouth_right)
+            mouth_height = self._distance(mouth_top, mouth_bottom)
+            if mouth_width < 1.0:
+                return None
+
+            ratio = mouth_height / mouth_width
+            center_y = (mouth_top[1] + mouth_bottom[1]) * 0.5
+            corners_y = (mouth_left[1] + mouth_right[1]) * 0.5
+            curve = (center_y - corners_y) / mouth_width
+
+            if ratio > 0.36:
+                confidence = min(1.0, (ratio - 0.28) / 0.25)
+                return "surprised", confidence
+            if curve > 0.025:
+                confidence = min(1.0, (curve - 0.015) / 0.05)
+                return "happy", confidence
+            if curve < -0.02:
+                confidence = min(1.0, (-curve - 0.015) / 0.05)
+                return "sad", confidence
+
+            neutral_score = 1.0 - min(1.0, abs(ratio - 0.2) * 3.0 + abs(curve) * 10.0)
+            return "neutral", neutral_score
+        except Exception:
+            return None
+
+    def _classify_hand(
+        self,
+        hand_landmarks,
+        frame_shape: tuple[int, int, int],
+        handedness: str,
+    ) -> Optional[tuple[str, float]]:
+        try:
+            pts = [self._landmark_to_xy(lm, frame_shape) for lm in hand_landmarks.landmark]
+        except Exception:
+            return None
+
+        if len(pts) < 21:
+            return None
+
+        h, w = frame_shape[0], frame_shape[1]
+        vert_thresh = max(6.0, 0.02 * h)
+        horiz_thresh = max(6.0, 0.02 * w)
+
+        def finger_extended(tip_idx: int, pip_idx: int) -> bool:
+            return pts[tip_idx][1] < (pts[pip_idx][1] - vert_thresh)
+
+        if handedness == "right":
+            thumb_extended = pts[4][0] > (pts[2][0] + horiz_thresh)
+        else:
+            thumb_extended = pts[4][0] < (pts[2][0] - horiz_thresh)
+
+        index_extended = finger_extended(8, 6)
+        middle_extended = finger_extended(12, 10)
+        ring_extended = finger_extended(16, 14)
+        pinky_extended = finger_extended(20, 18)
+
+        extended_flags = [thumb_extended, index_extended, middle_extended, ring_extended, pinky_extended]
+        extended_count = sum(1 for flag in extended_flags if flag)
+
+        if extended_count == 0:
+            return "fist", 1.0
+
+        if index_extended and not any([middle_extended, ring_extended, pinky_extended, thumb_extended]):
+            return "point", 0.9
+
+        if extended_count >= 4:
+            return "open", min(1.0, 0.6 + 0.1 * extended_count)
+
+        if index_extended and middle_extended and not (ring_extended or pinky_extended or thumb_extended):
+            return "peace", 0.85
+
+        return "partial", min(1.0, 0.3 + 0.15 * extended_count)
+
+    @staticmethod
+    def _landmark_to_xy(landmark, frame_shape: tuple[int, int, int]) -> tuple[float, float]:
+        h, w = frame_shape[0], frame_shape[1]
+        return landmark.x * w, landmark.y * h
+
+    @staticmethod
+    def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
+        return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
 az_ctrl = AxisControl()
@@ -385,6 +698,7 @@ def main():
 
     # Init face detector (YuNet -> DNN -> Haar)
     detector = Detector()
+    behavior = BehaviorAnalyzer(BEHAVIOR_INTERVAL)
     print("Face-follow running. Ctrl+C to stop.")
 
     # Start HTTP stream (daemon thread)
@@ -429,6 +743,8 @@ def main():
                 # Treat tiny blobs as noise
                 best = None
 
+            behavior.update(frame, best)
+
             if best is not None:
                 x, y, bw, bh = best
                 fx, fy = x + bw // 2, y + bh // 2
@@ -461,9 +777,6 @@ def main():
                     f"ALT:{'+' if alt_dir else '-'}{alt_rate:5.1f} Hz"
                 )
 
-                # push to stream
-                _set_stream_frame(frame)
-
             else:
                 # no face: stop gently
                 az_ctrl.set(0.0, True)
@@ -479,8 +792,8 @@ def main():
                     last_no_face_log = now
                 had_face_prev = False
 
-                # still stream live view
-                _set_stream_frame(frame)
+            behavior.annotate(frame)
+            _set_stream_frame(frame)
 
             # If face is centered (both rates 0) for a while, also disable
             if (
@@ -503,6 +816,7 @@ def main():
         a_worker.join(timeout=1.0)
         b_worker.join(timeout=1.0)
         enable_drivers(False)
+        behavior.close()
         cap.release()
         print("Drivers disabled. Bye.")
 
