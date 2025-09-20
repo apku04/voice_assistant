@@ -37,6 +37,9 @@ from .diagnostics import (
 )
 from .memory_manager import ConversationMemory
 from .display_manager import DisplayManager
+from .face_follow_manager import FaceFollowManager
+from .script_manager import ScriptManager
+import atexit
 
 # ---------- Logging ----------
 logging.basicConfig(
@@ -167,6 +170,17 @@ class VoiceAssistant:
 
         self.display = DisplayManager()
         self.display.splash("Optimus", "Voice system ready")
+
+        # Face follow (USB cam + steppers) as background service
+        self.face_follow = FaceFollowManager(display=self.display)
+        if getattr(config, "face_follow_enabled", True):
+            self.face_follow.start()
+
+        # Script manager (yaml-configured small actions)
+        self.scripts = ScriptManager()
+
+        # Ensure graceful shutdown
+        atexit.register(self.shutdown)
 
     # ---------- init ----------
     def init_stt(self):
@@ -410,6 +424,16 @@ class VoiceAssistant:
         """
         lowq = user_text.strip().lower()
 
+        # 0) QUICK SCRIPTS (phrase-mapped actions)
+        hit = self.scripts.match(user_text)
+        if hit:
+            ok, out = self.scripts.run(hit.key)
+            msg = out.strip() or ("ok" if ok else "error")
+            print(f"\nBOT ({self.current_model}): {msg}\n")
+            self.display.show_message(f"\nOptimus: {msg}\n")
+            self.tts.speak(msg)
+            return msg
+
         # 1) SAVE FIRST (so "remember this" doesn't get misrouted to recall)
         if self._maybe_remember_inline(user_text) or self._maybe_remember_trailing(user_text):
             return "OK"
@@ -486,6 +510,21 @@ class VoiceAssistant:
             self.current_model = user_input.split(" ", 1)[1].strip() or self.current_model
             self.history.clear()
             print(f"Model set to: {self.current_model}. History cleared.")
+            return True
+
+        # Face follow control
+        if low.startswith("/follow"):
+            parts = user_input.split()
+            sub = parts[1].lower() if len(parts) > 1 else "status"
+            if sub in {"on", "start"}:
+                ok = self.face_follow.start()
+                print("Face follow:", "started" if ok else "failed")
+            elif sub in {"off", "stop"}:
+                self.face_follow.stop()
+                print("Face follow: stopped")
+            else:
+                print("Face follow:", "running" if self.face_follow.is_running() else "stopped")
+                print("Usage: /follow on|off|status")
             return True
 
         # Language
@@ -661,6 +700,27 @@ class VoiceAssistant:
                 print(f"[audio-error] {e}")
             return True
 
+        # Scripts control
+        if low.startswith("/scripts"):
+            parts = user_input.split()
+            sub = parts[1] if len(parts) > 1 else "list"
+            if sub == "list":
+                ents = self.scripts.list_entries()
+                print("Scripts:")
+                for e in ents:
+                    print(f"- {e.key}: {', '.join(e.phrases)} -> {e.script} {e.args}")
+            elif sub == "reload":
+                self.scripts.reload()
+                print("Scripts reloaded.")
+            elif sub == "run" and len(parts) > 2:
+                ok, out = self.scripts.run(parts[2])
+                print(out)
+                if ok:
+                    self.tts.speak_chunks([out])
+            else:
+                print("Usage: /scripts list | reload | run <key>")
+            return True
+
         if low.startswith("/mic "):
             if sd is None:
                 print("sounddevice not installed.")
@@ -775,6 +835,14 @@ class VoiceAssistant:
         else:
             return input("\n> ").strip()
 
+    # ---------- shutdown ----------
+    def shutdown(self):
+        try:
+            if getattr(self, "face_follow", None):
+                self.face_follow.stop()
+        except Exception:
+            pass
+
     # ---------- CLI loop ----------
     def run(self):
         print("Commands:")
@@ -787,6 +855,8 @@ class VoiceAssistant:
         print("  /tail <path> [n]       -> tail file")
         print("  /temp | /time          -> quick facts")
         print("  /clear | /quit         -> housekeeping")
+        print("  /follow on|off|status  -> face follow control")
+        print("  /scripts list|reload|run <key> -> run mapped script")
         print("  /audio                 -> list PortAudio devices")
         print("  /mic <idx|name>        -> set input mic by index or name substring")
         print("  /remember <text>       -> save a freeform note")
@@ -825,3 +895,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    
+def _cleanup():
+    pass
