@@ -5,7 +5,7 @@ import time
 from typing import List
 from PIL import ImageFont
 
-from .config import config
+from .config import AppConfig, get_config
 
 def _log(msg: str):  # very chatty on purpose while we debug
     print(f"[display] {msg}")
@@ -25,12 +25,13 @@ class DisplayManager:
     - Assumes I2C address 0x3C on i2c-1 (can be changed via config)
     - Provides: splash(), show_message(title, body), show_user(), show_bot(), status(), idle()
     """
-    def __init__(self):
-        self.enabled = bool(getattr(config, "display_enabled", True))
-        self.addr    = int(getattr(config, "oled_addr", 0x3C))
-        self.port    = int(getattr(config, "oled_i2c_port", 1))
-        self.width   = int(getattr(config, "oled_width", 128))
-        self.height  = int(getattr(config, "oled_height", 128))
+    def __init__(self, config: AppConfig | None = None):
+        self._config = config or get_config()
+        self.enabled = bool(getattr(self._config, "display_enabled", True))
+        self.addr    = int(getattr(self._config, "oled_addr", 0x3C))
+        self.port    = int(getattr(self._config, "oled_i2c_port", 1))
+        self.width   = int(getattr(self._config, "oled_width", 128))
+        self.height  = int(getattr(self._config, "oled_height", 128))
         self.device  = None
         self.font    = ImageFont.load_default()
 

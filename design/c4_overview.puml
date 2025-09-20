@@ -1,0 +1,76 @@
+@startuml
+!includeurl https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+!includeurl https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_LEFT_RIGHT()
+
+' ---------------- Context ----------------
+Person(user, "Maker/User", "Interacts with the voice assistant via speech or keyboard")
+System(robot, "Optimus Voice Assistant", "Conversational agent running on Raspberry Pi")
+System_Ext(ollama, "Ollama Service", "Hosts LLM chat models")
+System_Ext(piper, "Piper CLI", "Generates speech audio")
+System_Ext(hardware, "Sensors & Actuators", "Microphone, RGB LED, OLED, steppers")
+System_Ext(systemd, "System Services", "Provides diagnostics via journalctl, etc.")
+
+Rel(user, robot, "Issues commands / asks questions")
+Rel(robot, user, "Provides spoken + visual responses")
+Rel(robot, ollama, "Chat API calls", "HTTP/JSON")
+Rel(robot, piper, "TTS synthesis", "CLI/PCM audio")
+Rel(robot, hardware, "Controls LEDs, display, camera, steppers")
+Rel(robot, systemd, "Collects telemetry/logs")
+
+SHOW_LEGEND()
+
+@enduml
+
+@startuml
+!includeurl https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_TOP_DOWN()
+
+Person(user, "Maker/User")
+System_Boundary(robot, "Optimus Voice Assistant") {
+    Container(app, "CLI Runtime", "Python", "Entry point `voice_assistant.main` orchestrates the conversation loop")
+    Container(registry, "Service Registry", "Python", "Creates and caches hardware/software services")
+    Container(stt, "STT Providers", "Python", "Wraps Whisper/Vosk backends")
+    Container(memory, "ConversationMemory", "Python", "Persists notes & primers")
+    Container(scripts, "ScriptManager", "Python", "Loads YAML-defined automations")
+    Container(commands, "CommandRouter", "Python", "Routes slash commands to handlers")
+    Container(face, "FaceFollow subsystem", "Python + OpenCV", "Tracks faces and drives steppers")
+    Container(tts, "PiperTTS", "Python", "Streams text to Piper CLI with FX and LED cues")
+    Container(display, "Display & LED Managers", "Python", "Update OLED messages + RGB status")
+}
+
+System_Ext(ollama, "Ollama", "LLM chat endpoint")
+System_Ext(piper, "Piper CLI", "Speech synthesizer")
+System_Ext(camera, "USB Camera", "Video stream for face tracking")
+System_Ext(microphone, "Microphone", "Audio input for STT")
+System_Ext(led, "RGB LED", "Status feedback")
+System_Ext(oled, "OLED Screen", "Textual status")
+System_Ext(steppers, "Stepper Drivers", "Azimuth/Altitude control")
+System_Ext(systemd, "OS services", "Diagnostics (journalctl, dmesg)")
+
+Rel(user, app, "Converses via speech or keyboard")
+Rel(app, commands, "Routes / commands")
+Rel(app, scripts, "Matches spoken shortcuts")
+Rel(app, memory, "Injects & stores context")
+Rel(app, stt, "Listens", "PCM audio")
+Rel(stt, microphone, "Captures audio")
+Rel(app, tts, "Speaks", "Text chunks")
+Rel(tts, piper, "Generate speech", "CLI")
+Rel(tts, led, "Pulse/status")
+Rel(app, display, "Show updates")
+Rel(display, oled, "Render text")
+Rel(display, led, "Color states")
+Rel(app, registry, "Resolve services")
+Rel(app, face, "Start/stop follower")
+Rel(face, camera, "Video frames")
+Rel(face, steppers, "Step pulses")
+Rel(face, display, "Status messages")
+Rel(app, ollama, "LLM prompts", "HTTP")
+Rel(memory, ollama, "Summaries/extractions", "HTTP")
+Rel(app, systemd, "Diagnostics", "Shell cmds")
+
+SHOW_LEGEND()
+
+@enduml

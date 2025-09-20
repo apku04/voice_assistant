@@ -41,7 +41,6 @@ class FaceFollowManager:
 
         try:
             self._stop_evt.clear()
-            # Use unbuffered python to get timely stdout
             cmd = [sys.executable, "-u", str(self.script_path)]
             self._proc = subprocess.Popen(
                 cmd,
@@ -50,11 +49,30 @@ class FaceFollowManager:
                 text=True,
                 bufsize=1,
             )
+            if self.display:
+                self.display.status("face: starting…")
+
+            # Detect immediate failures (missing deps, import errors, etc.)
+            time.sleep(0.4)
+            if self._proc.poll() is not None:
+                output = ""
+                if self._proc.stdout:
+                    try:
+                        output = self._proc.stdout.read()
+                    except Exception:
+                        output = ""
+                msg = f"[face-follow] process exited early (code={self._proc.returncode})"
+                print(msg)
+                if output:
+                    print(output.strip())
+                if self.display:
+                    self.display.status("face: start failed")
+                self.stop()
+                return False
+
             # Reader thread to consume output and update display
             self._reader_thread = threading.Thread(target=self._read_stdout, daemon=True)
             self._reader_thread.start()
-            if self.display:
-                self.display.status("face: starting…")
             return True
         except Exception as e:
             if self.display:
@@ -73,7 +91,8 @@ class FaceFollowManager:
                 line = (line or "").strip()
                 if not line:
                     continue
-                # Throttle display updates
+                print(f"[face-follow] {line}")
+                # Throttle display updates to avoid OLED spam
                 now = time.time()
                 if now - last_update < 0.25:
                     continue
@@ -94,8 +113,6 @@ class FaceFollowManager:
                 elif line.lower().startswith("stopping") or line.lower().startswith("drivers disabled"):
                     if self.display:
                         self.display.status("face: stopped")
-                # Also mirror to console for debugging
-                #print(f"[face-follow] {line}")
         except Exception as e:
             print(f"[face-follow] reader error: {e}")
 

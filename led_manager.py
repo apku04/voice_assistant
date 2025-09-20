@@ -1,4 +1,6 @@
 # voice_assistant/led_manager.py
+from __future__ import annotations
+
 from typing import Dict, Tuple, Optional, Any
 
 try:
@@ -8,18 +10,19 @@ try:
 except ImportError:
     RGBLED = None
 
-from .config import config
+from .config import AppConfig, get_config
 
 class LEDManager:
     """Manager for RGB LED feedback"""
     
-    def __init__(self):
+    def __init__(self, config: AppConfig | None = None):
         self.led = None
+        self._config = config or get_config()
         self.colors = {
-            "idle": config.idle_color,
-            "think": config.think_color,
-            "speak": config.speak_color,
-            "error": config.error_color
+            "idle": self._config.idle_color,
+            "think": self._config.think_color,
+            "speak": self._config.speak_color,
+            "error": self._config.error_color
         }
         
         self._initialize_led()
@@ -32,10 +35,10 @@ class LEDManager:
             
         try:
             self.led = RGBLED(
-                red=config.red_pin, 
-                green=config.green_pin, 
-                blue=config.blue_pin, 
-                active_high=config.led_active_high, 
+                red=self._config.red_pin, 
+                green=self._config.green_pin, 
+                blue=self._config.blue_pin, 
+                active_high=self._config.led_active_high, 
                 pwm=True
             )
             self.set_color("idle")

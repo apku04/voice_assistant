@@ -9,6 +9,8 @@ import time
 import logging
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
+from .config import AppConfig, get_config
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -106,9 +108,7 @@ def _apply_fx(in_wav: str, out_wav: str, preset: str,
             subprocess.run(["sox","-q", in_wav, out_wav],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-def _speak_file_first(text: str, pre_silence_ms: int = 200) -> None:
-    from .config import config
-    
+def _speak_file_first(text: str, config: AppConfig, pre_silence_ms: int = 200) -> None:
     model = config.piper_model
     if not model or not text:
         return
@@ -183,15 +183,15 @@ class PiperTTS:
                  max_chars: int = None,
                  pause_s: float = None,
                  prefix_zwsp: bool = True,
+                 config: AppConfig | None = None,
                  ):
-        from .config import config
-        
+        self._config = config or get_config()
         self.voice_cmd = voice_cmd
         self.voice_fn = voice_fn
         self.led_manager = led_manager
-        self.max_chunks = max_chunks or config.max_chunks
-        self.max_chars = max_chars or config.max_chars
-        self.pause_s = pause_s or config.pause_s
+        self.max_chunks = max_chunks or self._config.max_chunks
+        self.max_chars = max_chars or self._config.max_chars
+        self.pause_s = pause_s or self._config.pause_s
         self.prefix = "\u200B\u200B" if prefix_zwsp else ""
 
     # public
@@ -211,7 +211,7 @@ class PiperTTS:
                 elif self.voice_cmd:
                     subprocess.run(shlex.split(self.voice_cmd) + [payload], check=False)
                 else:
-                    _speak_file_first(payload)
+                    _speak_file_first(payload, self._config)
                     
                 if i < len(chunks):
                     time.sleep(self.pause_s)
@@ -237,7 +237,7 @@ class PiperTTS:
                 elif self.voice_cmd:
                     subprocess.run(shlex.split(self.voice_cmd) + [payload], check=False)
                 else:
-                    _speak_file_first(payload)
+                    _speak_file_first(payload, self._config)
                     
                 if i < len(chunks):
                     time.sleep(self.pause_s)

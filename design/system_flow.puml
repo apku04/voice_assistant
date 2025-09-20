@@ -1,0 +1,64 @@
+@startuml
+' Activity diagram covering runtime flow through core services
+
+!theme aws-orange
+skinparam activity {
+  ArrowColor #3B4252
+  BackgroundColor #ECEFF4
+  BorderColor #4C566A
+  FontColor #2E3440
+}
+skinparam note {
+  BackgroundColor #EBCB8B
+  BorderColor #D08770
+}
+
+start
+:CLI launches `VoiceAssistant.main()`;
+:ServiceRegistry builds shared services
+(LED, Display, STT, TTS, Memory, FaceFollow, Scripts);
+:BusyIndicator prepared and STT backend initialised;
+
+if (Face follow enabled?) then (yes)
+  :Start `follow_face.py`
+  note right
+    Manager supervises tracker subprocess
+    and streams status to Display
+  end note
+else (no)
+  :Skip tracker startup;
+endif
+
+repeat
+  :Read user input via STT
+  (or keyboard fallback);
+  if (Slash command?) then (yes)
+    :CommandRouter dispatches
+    to handler (model/lang/stt,
+    diagnostics, memory, scripts, etc.);
+    if (Terminal command?) then (yes)
+      :Perform action, emit TTS/display feedback;
+    endif
+  else (no)
+    :ScriptManager keyword match?;
+    if (Script hit?) then (yes)
+      :Run mapped script and speak result;
+    else (no)
+      :Check "remember" triggers;
+      if (Remember request?) then (yes)
+        :Persist note with ConversationMemory;
+      else (no)
+        :Inject relevant notes
+        into prompt using Memory primer;
+        :Call Ollama via `chat_once`;
+        :Truncate history, speak reply,
+        and update display;
+        :Run durable fact extraction
+        for new memory entries;
+      endif
+    endif
+  endif
+repeat while (session active?)
+
+stop
+@enduml

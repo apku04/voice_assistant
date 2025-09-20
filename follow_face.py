@@ -188,44 +188,72 @@ alt_ctrl = AxisControl()
 # ---------------- Detector abstraction ----------------
 class Detector:
     def __init__(self):
-        self.kind = None
+        self.kind: Optional[str] = None
         self.detector = None
-
-        # Try YuNet (best) if model file present and API available
-        if (hasattr(cv2, "FaceDetectorYN_create") or hasattr(cv2, "FaceDetectorYN")) and os.path.isfile(YUNET_ONNX):
-            try:
-                if hasattr(cv2, "FaceDetectorYN_create"):
-                    self.detector = cv2.FaceDetectorYN_create(
-                        YUNET_ONNX, "", (FRAME_W, FRAME_H),
-                        score_threshold=0.5, nms_threshold=0.3, top_k=5000
-                    )
-                else:
-                    self.detector = cv2.FaceDetectorYN.create(
-                        YUNET_ONNX, "", (FRAME_W, FRAME_H), 0.5, 0.3, 5000
-                    )
-                self.kind = "yunet"
-            except Exception:
-                self.detector = None
-
-        # Try DNN (res10) if YuNet not available
-        if self.detector is None and os.path.isfile(DNN_PROTO) and os.path.isfile(DNN_MODEL):
-            try:
-                self.detector = cv2.dnn.readNetFromCaffe(DNN_PROTO, DNN_MODEL)
-                self.kind = "dnn"
-            except Exception:
-                self.detector = None
-
-        # Fallback to Haar
-        if self.detector is None and os.path.isfile(HAAR_XML):
-            cascade = cv2.CascadeClassifier(HAAR_XML)
-            if not cascade.empty():
-                self.detector = cascade
-                self.kind = "haar"
-
-        if self.detector is None:
+        self._order = ["yunet", "dnn", "haar"]
+        if not self._init_detector():
             raise RuntimeError("No face detector available. Provide YuNet ONNX, DNN prototxt+caffemodel, or Haar XML.")
 
-        print(f"[detector] Using: {self.kind}")
+    # ---------------- internal helpers ----------------
+    def _init_detector(self, skip: set[str] | None = None) -> bool:
+        skip = set(skip or set())
+        self.detector = None
+
+        for kind in self._order:
+            if kind in skip:
+                continue
+
+            if kind == "yunet":
+                if not ((hasattr(cv2, "FaceDetectorYN_create") or hasattr(cv2, "FaceDetectorYN")) and os.path.isfile(YUNET_ONNX)):
+                    continue
+                try:
+                    if hasattr(cv2, "FaceDetectorYN_create"):
+                        self.detector = cv2.FaceDetectorYN_create(
+                            YUNET_ONNX, "", (FRAME_W, FRAME_H),
+                            score_threshold=0.5, nms_threshold=0.3, top_k=5000
+                        )
+                    else:
+                        self.detector = cv2.FaceDetectorYN.create(
+                            YUNET_ONNX, "", (FRAME_W, FRAME_H), 0.5, 0.3, 5000
+                        )
+                    self.kind = "yunet"
+                    print("[detector] Using: yunet")
+                    return True
+                except Exception as exc:
+                    print(f"[detector] YuNet init failed: {exc}")
+                    self.detector = None
+                    continue
+
+            if kind == "dnn":
+                if not (os.path.isfile(DNN_PROTO) and os.path.isfile(DNN_MODEL)):
+                    continue
+                try:
+                    self.detector = cv2.dnn.readNetFromCaffe(DNN_PROTO, DNN_MODEL)
+                    self.kind = "dnn"
+                    print("[detector] Using: dnn")
+                    return True
+                except Exception as exc:
+                    print(f"[detector] DNN init failed: {exc}")
+                    self.detector = None
+                    continue
+
+            if kind == "haar":
+                if not os.path.isfile(HAAR_XML):
+                    continue
+                cascade = cv2.CascadeClassifier(HAAR_XML)
+                if cascade.empty():
+                    continue
+                self.detector = cascade
+                self.kind = "haar"
+                print("[detector] Using: haar")
+                return True
+
+        self.kind = None
+        return False
+
+    def _fallback(self, failed_kind: str) -> bool:
+        print(f"[detector] {failed_kind} failed; attempting fallback")
+        return self._init_detector(skip={failed_kind})
 
     def detect(self, frame_bgr):
         """Return list of (x, y, w, h) int boxes."""
@@ -233,10 +261,16 @@ class Detector:
 
         if self.kind == "yunet":
             try:
-                self.detector.setInputSize((w, h))
-            except Exception:
-                pass
-            _, faces = self.detector.detect(frame_bgr)
+                try:
+                    self.detector.setInputSize((w, h))
+                except Exception:
+                    pass
+                _, faces = self.detector.detect(frame_bgr)
+            except cv2.error as exc:
+                print(f"[detector] YuNet runtime error: {exc}")
+                if self._fallback("yunet"):
+                    return self.detect(frame_bgr)
+                return []
             boxes = []
             if faces is not None:
                 for f in faces:
@@ -244,11 +278,17 @@ class Detector:
                     boxes.append((int(x), int(y), int(bw), int(bh)))
             return boxes
 
-        elif self.kind == "dnn":
-            blob = cv2.dnn.blobFromImage(frame_bgr, 1.0, (300, 300),
-                                         (104.0, 177.0, 123.0), swapRB=False, crop=False)
-            self.detector.setInput(blob)
-            detections = self.detector.forward()
+        if self.kind == "dnn":
+            try:
+                blob = cv2.dnn.blobFromImage(frame_bgr, 1.0, (300, 300),
+                                             (104.0, 177.0, 123.0), swapRB=False, crop=False)
+                self.detector.setInput(blob)
+                detections = self.detector.forward()
+            except cv2.error as exc:
+                print(f"[detector] DNN runtime error: {exc}")
+                if self._fallback("dnn"):
+                    return self.detect(frame_bgr)
+                return []
             boxes = []
             for i in range(detections.shape[2]):
                 conf = float(detections[0, 0, i, 2])
@@ -261,13 +301,22 @@ class Detector:
                 boxes.append((x1, y1, max(0, x2 - x1), max(0, y2 - y1)))
             return boxes
 
-        else:  # haar
-            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-            faces = self.detector.detectMultiScale(
-                gray, scaleFactor=1.1, minNeighbors=6, minSize=(60, 60),
-                flags=cv2.CASCADE_SCALE_IMAGE,
-            )
+        if self.kind == "haar":
+            try:
+                gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+                faces = self.detector.detectMultiScale(
+                    gray, scaleFactor=1.1, minNeighbors=6, minSize=(60, 60),
+                    flags=cv2.CASCADE_SCALE_IMAGE,
+                )
+            except cv2.error as exc:
+                print(f"[detector] Haar runtime error: {exc}")
+                return []
             return [(int(x), int(y), int(bw), int(bh)) for (x, y, bw, bh) in faces]
+
+        # If we reach here, detector is unavailable
+        if self._init_detector():
+            return self.detect(frame_bgr)
+        return []
 
 # ---------------- Helpers ----------------
 def error_to_rate_and_dir(dx, dy):
