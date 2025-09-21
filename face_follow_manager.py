@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from .display_manager import DisplayManager
 
@@ -32,11 +32,12 @@ class FaceFollowManager:
         self._reader_thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
         self._state_lock = threading.Lock()
-        self._latest_behavior: Dict[str, Optional[Tuple[str, float]]] = {
+        self._latest_behavior: Dict[str, Any] = {
             "mood": None,
             "left_hand": None,
             "right_hand": None,
             "last_event": None,
+            "mood_features": None,
         }
 
     def start(self) -> bool:
@@ -73,6 +74,7 @@ class FaceFollowManager:
     def _read_stdout(self):
         last_update = 0.0
         behavior_re = re.compile(r"^(Mood|Left hand|Right hand):\s+([\w\s]+)\s*\((\d+\.\d+)\)")
+        mood_features_re = re.compile(r"^Mood features:\s+(.+)$")
         try:
             if not self._proc or not self._proc.stdout:
                 return
@@ -96,6 +98,27 @@ class FaceFollowManager:
                         with self._state_lock:
                             self._latest_behavior[key] = (state.strip(), float(conf))
                             self._latest_behavior["last_event"] = (key, time.time())
+                    continue
+
+                feature_match = mood_features_re.match(line)
+                if feature_match:
+                    payload: Dict[str, float | bool] = {}
+                    for token in feature_match.group(1).split():
+                        if "=" not in token:
+                            continue
+                        name, raw_val = token.split("=", 1)
+                        value = raw_val.rstrip(",")
+                        if name == "face_visible":
+                            payload[name] = value.lower() in {"true", "1", "yes", "on"}
+                        else:
+                            try:
+                                payload[name] = float(value)
+                            except ValueError:
+                                continue
+                    if payload:
+                        with self._state_lock:
+                            self._latest_behavior["mood_features"] = dict(payload)
+                            self._latest_behavior["last_event"] = ("mood_features", time.time())
                     continue
 
                 # Throttle display updates for non-behavior messages
@@ -143,6 +166,6 @@ class FaceFollowManager:
     def is_running(self) -> bool:
         return bool(self._proc and self._proc.poll() is None)
 
-    def get_behavior_snapshot(self) -> Dict[str, Optional[Tuple[str, float]]]:
+    def get_behavior_snapshot(self) -> Dict[str, Any]:
         with self._state_lock:
             return dict(self._latest_behavior)

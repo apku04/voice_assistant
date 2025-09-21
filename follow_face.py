@@ -234,14 +234,16 @@ class BehaviorAnalyzer:
         self._drawing = None
         self._drawing_styles = None
         self._state_lock = threading.Lock()
-        self._state: dict[str, Optional[tuple[str, float]]] = {
+        self._state: dict[str, object] = {
             "mood": None,
             "left": None,
             "right": None,
+            "mood_features": None,
         }
         self._last_face_landmarks = None
         self._last_left_hand_landmarks = None
         self._last_right_hand_landmarks = None
+        self._last_mood_features: Optional[dict[str, float | bool]] = None
 
         if not self.enabled:
             print("[behavior] Disabled (FF_BEHAVIOR=0)")
@@ -302,6 +304,7 @@ class BehaviorAnalyzer:
                 if results.right_hand_landmarks
                 else None
             ),
+            "mood_features": dict(self._last_mood_features) if self._last_mood_features else None,
         }
 
         with self._state_lock:
@@ -412,12 +415,33 @@ class BehaviorAnalyzer:
             return
         label, conf = state
         print(f"{prefix}: {label} ({conf:.2f})")
+        if prefix == "Mood" and self._last_mood_features:
+            feat = self._last_mood_features
+            parts = []
+            ratio = feat.get("mouth_ratio")
+            if ratio is not None:
+                parts.append(f"mouth_ratio={ratio:.4f}")
+            curve = feat.get("mouth_curve")
+            if curve is not None:
+                parts.append(f"mouth_curve={curve:.4f}")
+            width = feat.get("mouth_width")
+            if width is not None:
+                parts.append(f"mouth_width={width:.1f}")
+            height = feat.get("mouth_height")
+            if height is not None:
+                parts.append(f"mouth_height={height:.1f}")
+            visible = feat.get("face_visible")
+            if visible is not None:
+                parts.append(f"face_visible={'true' if visible else 'false'}")
+            if parts:
+                print("Mood features: " + " ".join(parts))
 
     def _classify_mood(
         self,
         face_landmarks,
         frame_shape: tuple[int, int, int],
     ) -> Optional[tuple[str, float]]:
+        self._last_mood_features = None
         try:
             landmarks = face_landmarks.landmark
             needed = [61, 291, 13, 14]
@@ -432,12 +456,21 @@ class BehaviorAnalyzer:
             mouth_width = self._distance(mouth_left, mouth_right)
             mouth_height = self._distance(mouth_top, mouth_bottom)
             if mouth_width < 1.0:
+                self._last_mood_features = {"face_visible": False}
                 return None
 
             ratio = mouth_height / mouth_width
             center_y = (mouth_top[1] + mouth_bottom[1]) * 0.5
             corners_y = (mouth_left[1] + mouth_right[1]) * 0.5
             curve = (center_y - corners_y) / mouth_width
+
+            self._last_mood_features = {
+                "mouth_ratio": float(ratio),
+                "mouth_curve": float(curve),
+                "mouth_width": float(mouth_width),
+                "mouth_height": float(mouth_height),
+                "face_visible": True,
+            }
 
             if ratio > 0.36:
                 confidence = min(1.0, (ratio - 0.28) / 0.25)
@@ -452,6 +485,7 @@ class BehaviorAnalyzer:
             neutral_score = 1.0 - min(1.0, abs(ratio - 0.2) * 3.0 + abs(curve) * 10.0)
             return "neutral", neutral_score
         except Exception:
+            self._last_mood_features = {"face_visible": False}
             return None
 
     def _classify_hand(

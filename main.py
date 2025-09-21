@@ -38,7 +38,7 @@ from .diagnostics import (
 from .memory_manager import ConversationMemory
 from .display_manager import DisplayManager
 from .face_follow_manager import FaceFollowManager
-from .perception import BehaviorMonitor
+from .perception import BehaviorMonitor, LLMMoodInterpreter
 from .script_manager import ScriptManager
 import atexit
 
@@ -176,7 +176,16 @@ class VoiceAssistant:
         self.face_follow = FaceFollowManager(display=self.display)
         if getattr(config, "face_follow_enabled", True):
             self.face_follow.start()
-        self.behavior = BehaviorMonitor(self.face_follow)
+        self.mood_interpreter = (
+            LLMMoodInterpreter()
+            if getattr(config, "perception_llm_enabled", False)
+            else None
+        )
+        self.behavior = BehaviorMonitor(
+            self.face_follow,
+            mood_interpreter=self.mood_interpreter,
+            llm_passthrough=getattr(config, "perception_llm_enabled", False),
+        )
 
         # Script manager (yaml-configured small actions)
         self.scripts = ScriptManager()
@@ -840,7 +849,7 @@ class VoiceAssistant:
     def get_user_input(self) -> str:
         """Get user input via STT or keyboard based on current mode."""
         if self.stt_mode in {"vosk", "whisper"} and self.stt_obj is not None:
-            print(f"\n[mic] Mode={self.stt_mode}. Speak now… (/stt off to type)")
+            #print(f"\n[mic] Mode={self.stt_mode}. Speak now… (/stt off to type)")
             if self.led_manager:
                 self.led_manager.set_color((0.2, 0.6, 1.0))
             try:
@@ -854,7 +863,7 @@ class VoiceAssistant:
                     self.led_manager.set_color("idle")
             user = (user or "").strip()
             if not user:
-                print("[mic] No speech detected. Say again or /stt off to type.")
+                #print("[mic] No speech detected. Say again or /stt off to type.")
                 return ""
             print(f"> {user}")
             return user

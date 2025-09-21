@@ -3,6 +3,14 @@ import os
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Interpret common truthy strings from the environment."""
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
 class AppConfig:
     """Application configuration management"""
     
@@ -62,6 +70,14 @@ class AppConfig:
 
         # Face follow integration
         self.face_follow_enabled = True  # start tracker on boot
+
+        # Perception LLM bridge (disabled by default)
+        self.perception_llm_enabled = _env_flag("PERCEPTION_LLM", True)
+        self.perception_llm_model = os.getenv("PERCEPTION_LLM_MODEL", self.default_model)
+        try:
+            self.perception_llm_cooldown = float(os.getenv("PERCEPTION_LLM_COOLDOWN", "3.0"))
+        except ValueError:
+            self.perception_llm_cooldown = 3.0
         
     def get_vosk_model_path(self) -> str:
         """Get Vosk model path with fallback logic"""
