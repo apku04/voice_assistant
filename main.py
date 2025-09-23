@@ -429,9 +429,10 @@ class VoiceAssistant:
         """
         One turn:
           1) Save requests (“remember/save/store/note …”, incl. trailing “… remember this”)
-          2) Recall requests (“what is my X / recall Y / what did you save”)
-          3) Normal LLM turn (+ optional diagnostics injection)
-          4) Save durable user facts from this turn (user text only)
+          2) Perception queries (face/hand status handled without the main LLM)
+          3) Recall requests (“what is my X / recall Y / what did you save”)
+          4) Normal LLM turn (+ optional diagnostics injection)
+          5) Save durable user facts from this turn (user text only)
         """
         lowq = user_text.strip().lower()
 
@@ -449,7 +450,20 @@ class VoiceAssistant:
         if self._maybe_remember_inline(user_text) or self._maybe_remember_trailing(user_text):
             return "OK"
 
-        # 2) RECALL (generic, model-synthesized from top-k notes)
+        # 2) PERCEPTION QUERIES (face/hand status without LLM)
+        wants_mood = wants_hands = False
+        snapshot = None
+        perception_reply = None
+        if self.behavior:
+            wants_mood, wants_hands = self.behavior.requirements(user_text)
+            if wants_mood or wants_hands:
+                snapshot = self.behavior.snapshot()
+                perception_reply = self.behavior.answer_query(user_text, snapshot)
+                if perception_reply:
+                    self._announce_perception(perception_reply)
+                    return perception_reply
+
+        # 3) RECALL (generic, model-synthesized from top-k notes)
         topic = self._extract_topic(user_text)
         if topic is not None or re.search(r"\b(what\s+did\s+you\s+(remember|save)|what\s+do\s+you\s+know)\b", lowq):
             msg = self._llm_answer_from_memory(topic)
@@ -458,15 +472,7 @@ class VoiceAssistant:
             self.tts.speak(msg)
             return msg
 
-        # 2.5) PERCEPTION QUERIES (face/hand status without LLM)
-        wants_mood, wants_hands = self.behavior.requirements(user_text)
-        snapshot = self.behavior.snapshot() if (wants_mood or wants_hands) else None
-        perception_reply = self.behavior.answer_query(user_text, snapshot)
-        if perception_reply:
-            self._announce_perception(perception_reply)
-            return perception_reply
-
-        # 3) NORMAL CHAT (with optional diagnostics injection)
+        # 4) NORMAL CHAT (with optional diagnostics injection)
         user_for_llm = user_text
         perception = ""
         if wants_mood or wants_hands:
@@ -502,7 +508,7 @@ class VoiceAssistant:
             self.display.show_message(f"\nOptimus: {reply}\n")
             self.tts.speak(reply)
 
-            # 4) SAVE DURABLE FACTS (user text only; do not learn from the bot's own words)
+            # 5) SAVE DURABLE FACTS (user text only; do not learn from the bot's own words)
             self._save_to_memory_if_important(user_text, reply)
             return reply
 
